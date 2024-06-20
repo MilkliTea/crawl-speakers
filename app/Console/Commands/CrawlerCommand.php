@@ -68,7 +68,6 @@ class CrawlerCommand extends Command
             }
         } while ($speakers->count() < $resultCount);
 
-
         file_put_contents('speakers.json', json_encode($speakers, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         return Command::SUCCESS;
