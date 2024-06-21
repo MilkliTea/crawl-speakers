@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use DOMElement;
 use DOMXPath;
 use Illuminate\Console\Command;
 
@@ -41,8 +42,9 @@ class CrawlerCommand extends Command
     public function handle(): int
     {
         $speakers = collect();
-
         $resultCount = $this->getResultCount();
+
+        $bar = $this->output->createProgressBar($resultCount);
 
         do {
             $xpath = $this->createDOM($this->crawlerSiteUrl);
@@ -52,6 +54,7 @@ class CrawlerCommand extends Command
                 $attributes = $node->attributes;
                 $speakerJsonData = $attributes->getNamedItem('speaker')->nodeValue ?? null;
 
+                $imageUrl = $node->childNodes[1]->childNodes[1]->attributes->getNamedItem('src')->nodeValue ?? null;
                 if (!$speakerJsonData) {
                     continue;
                 }
@@ -63,17 +66,24 @@ class CrawlerCommand extends Command
                 });
 
                 if (!$existSpeaker) {
-                    $speakers->push($this->prepareSpeakerData($speakerData));
+                    $speakers->push($this->prepareSpeakerData($speakerData, $imageUrl));
+                    $bar->advance();
                 }
             }
         } while ($speakers->count() < $resultCount);
 
+        $bar->finish();
+        $this->info(' ');
+        $this->info('Konuşmacılar başarıyla çekildi. Dosya oluşturuluyor...');
+
         file_put_contents('speakers.json', json_encode($speakers, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        $this->info('Dosya oluşturuldu.');
 
         return Command::SUCCESS;
     }
 
-    private function prepareSpeakerData(array $speaker): array
+    private function prepareSpeakerData(array $speaker, string $imageUrl): array
     {
         return [
             'id' => $speaker['id'],
@@ -85,6 +95,8 @@ class CrawlerCommand extends Command
             'website' => $speaker['website'],
             'youtube' => $speaker['youtube'] ? 'https://youtube.com/@' . $speaker['youtube'] : null,
             'email' => $speaker['email'],
+            'image' => $imageUrl,
+            'bio' => str_replace("\n", ' ', html_entity_decode($speaker['bio'], ENT_QUOTES, 'UTF-8')),
             'talks' => $this->getSpeakerTalks($speaker['username']),
         ];
     }
@@ -105,7 +117,7 @@ class CrawlerCommand extends Command
         return $talks;
     }
 
-    private function getTalkDetail($talkElement): array
+    private function getTalkDetail(DOMElement $talkElement): array
     {
         $talkUrl = $talkElement->attributes->getNamedItem('href')->nodeValue;
 
@@ -114,13 +126,19 @@ class CrawlerCommand extends Command
         $talkTitleNode = $talkXPath->query("//span[@class='mt-2 block text-3xl font-bold leading-8 tracking-tight text-gray-900 sm:text-4xl']");
         $talkTitle = trim($talkTitleNode->item(0)->nodeValue);
 
-        $talkSliderNode = $talkXPath->query("//a[@class='block']");
-        $talkSliderUrl = $talkSliderNode->item(0) ? $talkSliderNode->item(0)->attributes->getNamedItem('href')->nodeValue : null;
+        $talkSliderNode = $talkXPath->query("//a[@class='block']")->item(0);
+        $talkSliderUrl = $talkSliderNode ? $talkSliderNode->attributes->getNamedItem('href')->nodeValue : null;
+
+        $talkDurationNode = $talkXPath->query("//span[@class='mt-3 block text-sm tracking-tight text-gray-700']")->item(0);
+        $talkDuration = $talkDurationNode ? trim($talkDurationNode->childNodes[2]->nodeValue) : null;
 
         return [
             'title' => html_entity_decode($talkTitle, ENT_QUOTES, 'UTF-8'),
+            'duration' => $talkDuration,
             'talk_url' => $talkUrl,
             'slider_url' => $talkSliderUrl,
+            'about_this_talk' => $this->getTalkDescription($talkXPath, 'prose prose-sm md:prose-base prose-indigo mx-auto bg-gray-100 text-gray-700 mt-12 px-4 pb-1 pt-5 shadow rounded-lg'),
+            'description' => $this->getTalkDescription($talkXPath, 'relative group prose prose-lg prose-indigo mx-auto mt-6 text-gray-500'),
         ];
     }
 
@@ -144,5 +162,23 @@ class CrawlerCommand extends Command
         $resultCountNode = $xpath->query("//p[@class='text-sm text-gray-700 leading-5 dark:text-gray-400']");
 
         return (int)$resultCountNode[0]->childNodes[11]->childNodes[0]->nodeValue;
+    }
+
+    private function getTalkDescription(DOMXPath $talkXPath, string $class): ?string
+    {
+        $talkDescriptionNode = $talkXPath->query("//div[@class='$class']/div")->item(0);
+
+        if (!$talkDescriptionNode) {
+            return null;
+        }
+
+        $newDom = new \DOMDocument();
+        $newDom->appendChild($newDom->importNode($talkDescriptionNode, true));
+
+        $secondDivContent = $newDom->saveHTML();
+
+        $description = str_replace("\n", ' ', trim(strip_tags($secondDivContent)));
+
+        return html_entity_decode($description, ENT_QUOTES, 'UTF-8');
     }
 }
